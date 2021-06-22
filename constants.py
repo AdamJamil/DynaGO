@@ -1,28 +1,42 @@
-cell_size = 26
-board_width, board_height = 45, 34
+cell_size = 40  # 26
+board_width, board_height = 10, 10  # 45, 34
 width, height = cell_size * board_width, cell_size * board_height
+usable_cells = 56 + 8
 
-spawn_y = ((29, 32), (7, 10))
-spawn_x = ((6, 9), (40, 43))
+team_size = 3
+team_types = [1, 1, 1]
 
-capture_y = ((6, 11), (22, 25))
-capture_x = ((5, 9), (13, 17))
+spawn_y = ((7, 8), (1, 2))  # ((29, 32), (7, 10))
+spawn_x = ((1, 2), (7, 8))  # ((6, 9), (40, 43))
 
-game_length_s = 45
-fps = 30
-game_length_frames = game_length_s * fps
-iframes = 4
+capture_y = ((600, 11), (22, 25))  # TODO: undo this as well (remove double zeros)
+capture_x = ((500, 9), (13, 17))
+
+game_length_s = 100
+ifps = 8
+game_length_frames = game_length_s * ifps
+fps = 120
+iframes = 1
 
 distance_thresh = 8
 health_thresh = 51
 
 adjusted_agent_radius = 2 ** -0.5
-bullet_speed = [2.4, 1.8]
+bullet_speed = [1.2, 0.9]
 bullet_range = [10000, 11]
 bullet_spread = [0, 0.0872665]  # 5 deg in radians
-bullet_damage = [0.4, 0.08, 0.4]
+bullet_damage = [40, 8, 40]
 max_ammo = [2, 20, 10000]
-cd = [fps, fps // 4, fps * 3]
-reload = [fps * 4, fps * 4, 0]
+cd = [ifps, ifps // 4, ifps * 3]
+reload = [int(ifps * 0.8), int(ifps * 0.8), 0]
 
-capture_thresh = fps * 10
+capture_thresh = ifps * 10
+
+win_reward = 0
+tie_penalty = 0
+damage_reward_ratio = 0.01
+kill_reward = 0.0
+
+self_info_size = usable_cells * 3 * 2 * 5
+friend_info_size = 2 * 4 * 2 * 2
+enemy_info_size = 2 * 8 * 3
