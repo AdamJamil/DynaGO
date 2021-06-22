@@ -197,7 +197,6 @@ class Simulator:
 
                 assert(sum(len(x) for x in visible) == sum(agent.health != 0 for agent in agents) - 1)
 
-                visible = [sorted(visible[0], key=lambda x: x[0]), sorted(visible[1], key=lambda x: x[0])]  # TODO: remove for optimziation
                 if self.show_game and agent.team == 0 and agent.ptype == 1:
                     self.lines = []
                     self.olines = []

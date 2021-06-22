@@ -9,7 +9,7 @@ team_types = [1, 1, 1]
 spawn_y = ((7, 8), (1, 2))  # ((29, 32), (7, 10))
 spawn_x = ((1, 2), (7, 8))  # ((6, 9), (40, 43))
 
-capture_y = ((600, 11), (22, 25))  # TODO: undo this as well (remove double zeros)
+capture_y = ((600, 11), (22, 25))
 capture_x = ((500, 9), (13, 17))
 
 game_length_s = 100
