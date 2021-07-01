@@ -1,3 +1,4 @@
+import itertools
 import time
 from math import sin, cos, atan2
 
@@ -6,10 +7,14 @@ from PIL import Image
 
 from bots import *
 from helper import *
+from constants import *
+
+import torch
 
 
 class Simulator:
-    def __init__(self):
+    def __init__(self, k):
+        self.k = k
         self.show_game = True
         self.draw_data = {}
 
@@ -20,10 +25,10 @@ class Simulator:
 
         # first team is blue
         self.teams = tuple((
-            tuple(TDBot(0, ptype) for ptype in team_types),
-            tuple(RandomBot(1, ptype) for ptype in team_types)
+            tuple(TDBot(0, ptype, batch_size) for ptype in team_types),
+            tuple(RandomBot(1, ptype, batch_size) for ptype in team_types)
         ))
-        self.bullets = []  # bullet = team, type, pos, dir
+        self.bullets = torch.tensor([])
 
         # sprites
         self.char_img = (
@@ -48,7 +53,7 @@ class Simulator:
         self.bullet_sz = [(img.get_height(), img.get_width()) for img in self.bullet_img]
 
         # board shit
-        self.move_delta = ((-1, 0), (1, 0), (0, -1), (0, 1))
+        self.move_delta = torch.tensor(((-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)), device=dev)
         board_image = Image.open("C:/Users/adama/OneDrive/Desktop/dyna_go/dyna_small.png")
         self.board_image = pygame.image.load("C:/Users/adama/OneDrive/Desktop/dyna_go/dyna_small.png")
         self.board_image = pygame.transform.scale(self.board_image, (width, height))
@@ -57,6 +62,8 @@ class Simulator:
         else:
             self.board = tuple(tuple(x) for x in numpy.array(board_image))
         board_image.close()
+
+        self.board = torch.tensor(self.board, dtype=torch.int, device=dev)
 
         delta = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
@@ -67,7 +74,7 @@ class Simulator:
             return ((y_ + dy, x_ + dx) for dy, dx in delta if self.ok(y_ + dy, x_ + dx))
 
         def on_border(y_, x_):
-            return [i for i, (yn_, xn_) in enumerate(all_neigh(y_, x_)) if self.ok(yn_, xn_) and self.board[yn_][xn_]]
+            return [o for o, (yn_, xn_) in enumerate(all_neigh(y_, x_)) if self.ok(yn_, xn_) and self.board[yn_][xn_]]
 
         self.borders = []
         seen = set()
@@ -109,14 +116,45 @@ class Simulator:
                     last = [d, yn, xn]
                 proc(first, last)
 
-        self.cell_idx = [[-1] * board_width for _ in range(board_height)]
+        self.cell_idx = torch.zeros((board_height, board_width), dtype=torch.long, device=dev)
+        self.open_cell = []
         curr = 0
         for y in range(board_height):
             for x in range(board_width):
                 if self.board[y][x]:
                     self.cell_idx[y][x] = curr
+                    self.open_cell.append((y, x))
                     curr += 1
-        print(curr, "gaming")
+        print(f"Board has {curr} open cells.")
+        self.is_visible = torch.empty((curr, curr), dtype=torch.bool, device=dev)
+        self.dist = torch.empty((curr, curr), dtype=torch.half, device=dev)
+        self.ang8 = torch.empty((curr, curr), dtype=torch.int8, device=dev)
+        self.ang = torch.empty((curr, curr), dtype=torch.half, device=dev)
+        for i in range(curr):
+            for j in range(curr):
+                self.is_visible[i][j] = self.is_visible_(
+                    (self.open_cell[i][0] + 0.5, self.open_cell[i][1] + 0.5),
+                    (self.open_cell[j][0] + 0.5, self.open_cell[j][1] + 0.5)
+                )
+                dy = self.open_cell[j][0] - self.open_cell[i][0]
+                dx = self.open_cell[j][1] - self.open_cell[i][1]
+                self.dist[i][j] = ((dy ** 2) + (dx ** 2)) ** 0.5
+                self.ang[i][j] = math.atan2(dy, dx)
+                self.ang8[i][j] = int(3 + 4 * (self.ang[i][j] / math.pi))
+
+        # test if is_visible is correct
+        # self.screen.fill((255, 255, 255))
+        # for i in range(board_height):
+        #     for j in range(board_width):
+        #         pygame.draw.circle(self.screen, (0, 0, 255), (cell_size * (j + 0.5), cell_size * (i + 0.5)), 4)
+        #         if self.board[i][j] == 0:
+        #             print("h")
+        #             pygame.draw.rect(self.screen, (0, 0, 0), ((cell_size * (j + 0.0), cell_size * (i + 0.0)), (cell_size, cell_size)))
+        # for i in range(curr):
+        #     for j in range(curr):
+        #         if self.is_visible[i][j]:
+        #             pygame.draw.line(self.screen, (255, 0, 0), (cell_size * (self.open_cell[i][1] + 0.5), (self.open_cell[i][0] + 0.5) * cell_size),
+        #                              (cell_size * (self.open_cell[j][1] + 0.5), cell_size * (self.open_cell[j][0] + 0.5)))`
 
         # test if lines loaded correctly
         # self.screen.fill((255, 255, 255))
@@ -126,11 +164,7 @@ class Simulator:
         # pygame.display.flip()
         # time.sleep(100)
 
-    @staticmethod
-    def ok(y_, x_):
-        return 0 <= y_ < board_height and 0 <= x_ < board_width
-
-    def is_visible(self, p1, p2):
+    def is_visible_(self, p1, p2):
         l1 = (p1[0], p1[1], p2[0], p2[1])
         is_vis = True
         for l2 in self.borders:
@@ -138,153 +172,171 @@ class Simulator:
                 is_vis = False
         return is_vis
 
-    def bullet_hit(self, agent, bullet_type, bullet_pos, bullet_dir):
-        if not self.is_visible(agent, bullet_pos):
-            return False
-        if dist(add_tuple(bullet_pos, bullet_dir), agent) < dist(bullet_pos, agent):
-            p0 = agent
-            p1 = bullet_pos
-            p2 = [bullet_pos[0] + bullet_dir[0], bullet_pos[1] + bullet_dir[1]]
-            # https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
-            min_dist = abs(p1[0] * (p2[1] - p0[1]) + p2[0] * (p0[1] - p1[1]) + p0[0] * (p1[1] - p2[1]))
-            if min_dist < (adjusted_agent_radius + 0.2) * bullet_speed[bullet_type]:
-                return True
-        return False
-
-    def bullet_state(self, agent):
-        for bullet in self.bullets:
-            if bullet[0] != agent.team and self.bullet_hit((agent.y + 0.5, agent.x + 0.5), bullet[1], bullet[2], bullet[3]):
-                return 1 + round_ang((agent.y + 0.5, agent.x + 0.5), bullet[2], 4)
-        return 0
+    @staticmethod
+    def ok(y_, x_):
+        return 0 <= y_ < board_height and 0 <= x_ < board_width
 
     def episode(self):
-        agents = []
-        for team in self.teams:
-            for agent in team:
-                agent.reset()
-                agents.append(agent)
+        k = self.k
+        agents = [agent for team in self.teams for agent in team]
+        for agent in agents:
+            agent.reset()
 
+        pos = torch.empty((k, 2 * team_size, 2), dtype=torch.int64, device=dev)
+        ammo = torch.empty((k, 2 * team_size), dtype=torch.int8, device=dev)
+        reload = torch.zeros((k, 2 * team_size), dtype=torch.int8, device=dev)
+        cd = torch.zeros((k, 2 * team_size), dtype=torch.int8, device=dev)
+        health = torch.full((self.k, 2 * team_size), 100, dtype=torch.int16, device=dev)
+        for idx, agent in enumerate(agents):
+            pos[:, idx, 0] = torch.randint(*spawn_y[agent.team], (self.k,), device=dev)  # TODO: figure why warning?
+            pos[:, idx, 1] = torch.randint(*spawn_x[agent.team], (self.k,), device=dev)
+            ammo[:, idx] = torch.full((self.k,), max_ammo[agent.ptype], device=dev)
 
-        self.bullets = []
-        # capture_frames = [0, 0]
+        self.bullets = torch.full((k, 2, max_bullets, 3, 2), -1, dtype=torch.half, device=dev)  # (team, type), pos, dir
 
         for frame in range(game_length_frames):
-            states = []
-            friends, enemies = [], []
+            states = torch.empty((k, 2 * team_size), dtype=torch.int, device=dev)
+            pos_idx = self.cell_idx[pos.unbind(-1)]
+            neighbors = self.dist[batch_self_prod(pos_idx).unbind(-1)].view(k, 2 * team_size, 2 * team_size)
+            self.bullets[:, :, :, 1, :] += self.bullets[:, :, :, 2, :]
 
-            for bullet in self.bullets:
-                bullet[2][0] += bullet[3][0]
-                bullet[2][1] += bullet[3][1]
+            for idx, agent in enumerate(agents):
+                # find visible alive agents
+                is_vis_alive = self.is_visible[pos_idx[:, idx].unsqueeze(1), pos_idx].clone()
+                is_vis_alive.logical_and_(health != 0)
+                is_vis_alive.logical_and_((torch.arange(2 * team_size, device=dev) != idx).unsqueeze(0).expand(k, 2 * team_size))
+                neighbors[:, idx, :] *= is_vis_alive
+            neighbors[neighbors == 0.] = usable_cells
 
-            for agent in agents:
-                if agent.reload or not agent.health:
-                    states.append((4, (1 if not agent.health else 0)))
-                    friends.append(None)
-                    enemies.append(None)
-                    continue
+            for idx, agent in enumerate(agents):
+                team = slice(team_size * agent.team, team_size * (agent.team + 1))
+                oteam = slice(team_size * (1 - agent.team), team_size * (2 - agent.team))
+                # find closest ally
+                friend = neighbors[:, idx, team].argmin(dim=1)
+                f_ok = neighbors[torch.arange(k, device=dev), idx, friend] != usable_cells
+                enemy = neighbors[:, idx, oteam].argmin(dim=1)
+                e_ok = neighbors[torch.arange(k, device=dev), idx, enemy] != usable_cells
 
-                visible = [[], []]
-                for oagent in agents:
-                    if agent == oagent or not oagent.health:
-                        continue
-                    # for l2 in self.borders:        #  good debug if visibility check is wrong
-                    #     if intersect(l1, l2) ^ intersect(l2, l1):
-                    #         print(l1, l2, math.int)
-                    if self.is_visible((agent.y + 0.5, agent.x + 0.5), (oagent.y + 0.5, oagent.x + 0.5)):
-                        visible[oagent.team].append((dist((agent.y, agent.x), (oagent.y, oagent.x)), oagent))
-                if agent.team == 1:
-                    visible = [visible[1], visible[0]]
+                # compute friend info
+                f_d = neighbors[torch.arange(k, device=dev), idx, friend] >= distance_thresh
+                f_a = self.ang8[pos_idx[:, idx], pos_idx[torch.arange(k, device=dev), friend]].div(2, rounding_mode='trunc')
+                f_t = friend - (team_size * agent.team)
+                f_t += -1 * (f_t > agent.ptype)
+                f_h = health[torch.arange(k, device=dev), friend] >= health_thresh
+                f_info = f_ok * (f_ok + f_h + 2 * (f_t + 2 * (f_a + 4 * f_d)))
 
-                assert(sum(len(x) for x in visible) == sum(agent.health != 0 for agent in agents) - 1)
+                e_d = neighbors[torch.arange(k, device=dev), idx, enemy] >= distance_thresh
+                e_a = self.ang8[pos_idx[:, idx], pos_idx[torch.arange(k, device=dev), enemy]]
+                e_t = enemy - (team_size * (1 - agent.team))
+                e_info = e_ok * (e_ok + e_t + 3 * (e_a + 8 * e_d))
 
-                if self.show_game and agent.team == 0 and agent.ptype == 1:
-                    self.lines = []
-                    self.olines = []
-                    for vfriend in visible[0]:
-                        self.lines.append(((agent.x + 0.5, agent.y + 0.5), (vfriend[1].x + 0.5, vfriend[1].y + 0.5)))
-                    for venemy in visible[1]:
-                        self.olines.append(((agent.x + 0.5, agent.y + 0.5), (venemy[1].x + 0.5, venemy[1].y + 0.5)))
+                s_p = pos_idx[:, idx]
+                s_s = 2 * cd[:, idx].bool() + 1 * (~(cd[:, idx].bool()) * ~(ammo[:, idx].bool()))
+                s_h = health[:, idx] >= health_thresh
 
-                state_type = bool(visible[0]) + 2 * bool(visible[1])
-                friend = min(visible[0], key=lambda x: x[0])[1] if visible[0] else None
-                enemy = min(visible[1], key=lambda x: x[0])[1] if visible[1] else None
-                friends.append(friend)
-                enemies.append(enemy)
+                b_valid = self.bullets[:, 1 - agent.team, :, 0, 0] != -1
+                b_pos = self.bullets[:, 1 - agent.team, :, 1, :].long()
+                b_pos.clamp_(min=0, max=min(board_height, board_width) - 1)
+                b_pos_idx = self.cell_idx[b_pos.unbind(-1)]
+                b_vis = self.is_visible[pos_idx[:, idx].unsqueeze(1), b_pos_idx]
+                b_ang = torch.atan2(*self.bullets[:, 1 - agent.team, :, 1, :].unbind(-1))
+                b_approx = b_ang.isclose(self.ang[pos_idx[:, idx].unsqueeze(1), b_pos_idx], atol=0.25)
 
-                self_info = (((self.cell_idx[agent.y][agent.x] * 3 +
-                               (2 if agent.cd else (0 if not agent.ammo else 1))) * 2 +
-                              int(agent.health >= health_thresh)) * 5 +
-                             self.bullet_state(agent), )
+                b_valid.logical_and_(b_vis)
+                b_valid.logical_and_(b_approx)
 
-                states.append((state_type, (*self_info, *friend_state(agent, friend), *enemy_state(agent, enemy))))
+                s_b = b_valid * (b_valid + (self.ang8[pos_idx[:, idx].unsqueeze(1), b_pos_idx] / 2))
+                s_b = torch.max(s_b, dim=1)[0]
 
-            pygame.event.get()
+                s_info = s_b + 5 * (s_h + 2 * (s_s + 3 * s_p))
+                
+                s = f_info + (2 * 2 * 4 * 2) * (e_info + (3 * 8 * 2) * s_info)
 
-            rewards = [0.] * 6
+                reloading = reload != 0
+                dead = health == 0
+                s[reloading[:, idx]] = reload_state
+                s[dead[:, idx]] = dead_state
+                agent.action(s.long(), frame)
 
             # actions
-            to_shoot = []
-            for state, agent, friend, enemy in zip(states, agents, friends, enemies):
-                action = agent.action(state)
-                if not agent.health:
-                    continue
+            for idx, agent in enumerate(agents):
+                action = agent.actions[frame]
+                move = health[:, idx] != 0
+                move.logical_and_(reload[:, idx] == 0)
+                new_pos = pos[:, idx] + self.move_delta[action.long()]
+                move_ok = self.board[new_pos.unbind(-1)] != 0
+                pos[:, idx, :] += move_ok.unsqueeze(1) * self.move_delta[action.long()]
 
-                if not agent.reload:
-                    if 0 <= action <= 3:
-                        target = agent.y + self.move_delta[action][0], agent.x + self.move_delta[action][1]
-                        if self.board[target[0]][target[1]] != 0:
-                            agent.y, agent.x = target
-                    elif agent.ammo and not agent.cd:
-                        if agent.ptype == 2:  # healer
-                            if friend and dist((friend.y, friend.x), (agent.y, agent.x)) < distance_thresh:
-                                heal = min(bullet_damage[2], 100 - friend.health)
-                                rewards[3 * friend.team + friend.ptype] += heal * damage_reward_ratio
-                                rewards[3 * agent.team + agent.ptype] += heal * damage_reward_ratio
-                                friend.health += heal
-                                agent.cd = cd[2]
-                        elif enemy and agent.ptype == 1:
-                            to_shoot.append((enemy, agent.ptype, (agent.y, agent.x)))
-                            agent.ammo += -1
-                            agent.cd = cd[agent.ptype]
-                    elif not agent.ammo:
-                        agent.reload = reload[agent.ptype]
-                if agent.reload == 1:
-                    agent.ammo = max_ammo[agent.ptype]
-                agent.reload = max(0, agent.reload - 1)
-                agent.cd = max(0, agent.cd - 1)
+            # actions
+            for idx, agent in enumerate(agents):
+                action = agent.actions[frame]
+                shoot = health[:, idx] != 0
+                shoot.logical_and_(reload[:, idx] == 0)
+                shoot.logical_and_(cd[:, idx] == 0)
+                shoot.logical_and_(ammo[:, idx] != 0)
+                shoot.logical_and_(action == 4)
+                if agent.ptype == 2:
+                    team = slice(team_size * agent.team, team_size * (agent.team + 1))
+                    friend = neighbors[:, idx, team].argmin(dim=1)
+                    f_ok = neighbors[torch.arange(k, device=dev), idx, friend] != usable_cells
+                    shoot.logical_and_(f_ok)
+                    heal = shoot * torch.min(
+                        torch.tensor(bullet_damage[2], device=dev),
+                        100 - health[torch.arange(k, device=dev), friend]
+                    )
+                    health[torch.arange(k, device=dev), friend] += heal
+                    agent.rewards[frame] += heal * damage_reward_ratio
+                    cd[:, idx] = shoot * cd_frames[2]
+                else:
+                    oteam = slice(team_size * (1 - agent.team), team_size * (2 - agent.team))
+                    enemy = neighbors[:, idx, oteam].argmin(dim=1)
+                    e_ok = neighbors[torch.arange(k, device=dev), idx, enemy] != usable_cells
+                    shoot.logical_and_(e_ok)
 
-            for enemy, ptype, (y, x) in to_shoot:
-                angle = atan2(enemy.y - y, enemy.x - x)
-                angle += (random.random() * 2 * bullet_spread[agent.ptype]) - bullet_spread[agent.ptype]
-                bullet = [1 - enemy.team, ptype, [y + 0.5, x + 0.5],
-                                (sin(angle) * bullet_speed[ptype], cos(angle) * bullet_speed[ptype])]
-                self.bullets.append(bullet)
+
+            #         elif enemy and agent.ptype == 1:
+            #             to_shoot.append((enemy, agent.ptype, (agent.y, agent.x)))
+            #             agent.ammo += -1
+            #             agent.cd = cd[agent.ptype]
+            #     elif not agent.ammo:
+            #         agent.reload = reload[agent.ptype]
+                # if agent.reload == 1:
+                #     agent.ammo = max_ammo[agent.ptype]
+                # agent.reload = max(0, agent.reload - 1)
+                # agent.cd = max(0, agent.cd - 1)
+
+            # for enemy, ptype, (y, x) in to_shoot:
+            #     angle = atan2(enemy.y - y, enemy.x - x)
+            #     angle += (random.random() * 2 * bullet_spread[agent.ptype]) - bullet_spread[agent.ptype]
+            #     bullet = [1 - enemy.team, ptype, [y + 0.5, x + 0.5],
+            #               (sin(angle) * bullet_speed[ptype], cos(angle) * bullet_speed[ptype])]
+            #     self.bullets.append(bullet)
 
             # environment response
 
             # bullets
-            rem_bullets = []
-            for bullet in self.bullets:
-                hit = False
-
-                for agent in agents:
-                    if not agent.health or agent.team == bullet[0]:
-                        continue
-                    if dist((agent.y + 0.5, agent.x + 0.5), bullet[2]) <= adjusted_agent_radius:
-                        hit = True
-                        dmg = min(bullet_damage[bullet[1]], agent.health)
-                        rewards[3 * bullet[0] + bullet[1]] += dmg * damage_reward_ratio
-                        rewards[3 * agent.team + agent.ptype] -= dmg * damage_reward_ratio
-                        agent.health -= dmg
-                        if not agent.health:
-                            rewards[3 * bullet[0] + bullet[1]] += kill_reward
-                            rewards[3 * agent.team + agent.ptype] -= kill_reward
-
-                if not hit and self.ok(int(bullet[2][0]), int(bullet[2][1])):
-                    if self.board[int(bullet[2][0])][int(bullet[2][1])] != 0:
-                        rem_bullets.append(bullet)
-
-            self.bullets = rem_bullets
+            # rem_bullets = []
+            # for bullet in self.bullets:
+            #     hit = False
+            #
+            #     for agent in agents:
+            #         if not agent.health or agent.team == bullet[0]:
+            #             continue
+            #         if dist((agent.y + 0.5, agent.x + 0.5), bullet[2]) <= adjusted_agent_radius:
+            #             hit = True
+            #             dmg = min(bullet_damage[bullet[1]], agent.health)
+            #             rewards[3 * bullet[0] + bullet[1]] += dmg * damage_reward_ratio
+            #             rewards[3 * agent.team + agent.ptype] -= dmg * damage_reward_ratio
+            #             agent.health -= dmg
+            #             if not agent.health:
+            #                 rewards[3 * bullet[0] + bullet[1]] += kill_reward
+            #                 rewards[3 * agent.team + agent.ptype] -= kill_reward
+            #
+            #     if not hit and self.ok(int(bullet[2][0]), int(bullet[2][1])):
+            #         if self.board[int(bullet[2][0])][int(bullet[2][1])] != 0:
+            #             rem_bullets.append(bullet)
+            #
+            # self.bullets = rem_bullets
 
             done = 0
 
@@ -365,28 +417,30 @@ class Simulator:
             for agent in self.teams[0]:
                 if agent.ptype == 1 and agent.health:
                     for idx, line in enumerate(self.lines):
-                        pygame.draw.line(self.screen, (255 * (idx == 0), 50, 255), *((point[0] * cell_size, point[1] * cell_size) for point in line))
+                        pygame.draw.line(self.screen, (255 * (idx == 0), 50, 255),
+                                         *((point[0] * cell_size, point[1] * cell_size) for point in line))
 
                     for idx, line in enumerate(self.olines):
-                        pygame.draw.line(self.screen, (255, 50, 255 * (idx == 0)), *((point[0] * cell_size, point[1] * cell_size) for point in line))
+                        pygame.draw.line(self.screen, (255, 50, 255 * (idx == 0)),
+                                         *((point[0] * cell_size, point[1] * cell_size) for point in line))
                     break
 
             pygame.display.flip()
             time.sleep(1 / (iframes * fps))
 
 
-simul = Simulator()
+simul = Simulator(batch_size)
 simul.show_game = False
 
 # simul.show_game = True
 # simul.episode()
 # simul.show_game = False
 
-for i_ in range(1000):
+for i_ in range(1000000):
     for team_ in simul.teams:
         for agent_ in team_:
-            agent_.epsilon *= 0.98
-            agent_.alpha *= 0.98
+            agent_.epsilon *= 0.99
+            agent_.alpha *= 0.99
 
     wins = 0
     ties = 0
@@ -409,8 +463,8 @@ for i_ in range(1000):
     print("eps=" + str(simul.teams[0][0].epsilon))
     print()
 
-    simul.show_game = True
-    simul.episode()
-    simul.show_game = False
+    # simul.show_game = True
+    # simul.episode()
+    # simul.show_game = False
 
 pygame.quit()

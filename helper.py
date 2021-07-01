@@ -1,6 +1,7 @@
 import math
 from constants import *
 from dataclasses import dataclass
+import torch
 
 
 def intersect(l1, l2):
@@ -15,8 +16,8 @@ def intersect(l1, l2):
     return den != 0 and 0 <= num1 / den <= 1 and 0 <= num2 / den <= 1
 
 
-def dist(p1, p2):
-    return (((p1[0] - p2[0]) ** 2) + ((p1[1] - p2[1]) ** 2)) ** 0.5
+def l2(p1, p2):
+    return (((p1[:, 0] - p2[:, 0]) ** 2) + ((p1[:, 1] - p2[:, 1]) ** 2)) ** 0.5
 
 
 def round_ang(p1, p2, k):
@@ -44,3 +45,10 @@ def enemy_state(player, oplayer):
 
 def add_tuple(t1, t2):
     return tuple(e1 + e2 for e1, e2 in zip(t1, t2))
+
+
+def batch_self_prod(A):
+    n, m = A.shape
+    idx0 = torch.repeat_interleave(torch.cartesian_prod(torch.arange(n), torch.arange(m)), m, dim=0)
+    idx1 = torch.cartesian_prod(torch.arange(n), torch.arange(m).repeat(m))
+    return torch.column_stack((A[idx0[:, 0], idx0[:, 1]], A[idx1[:, 0], idx1[:, 1]]))
